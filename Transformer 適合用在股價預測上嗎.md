@@ -13,7 +13,7 @@ Series decomposition Transformer with period-correlation for stock market index 
 
 目的：透過這些機制來捕捉時間序列資料中固有的週期性 (Inherent Periodicity) 以及序列之間的關聯性 (Relation)。
 
-下面是PPT，懶得轉成文字了
+下面是我做的PPT，懶得轉成文字了
 ![image](https://hackmd.io/_uploads/HJPR6mPB-g.png)
 ![image](https://hackmd.io/_uploads/SJrgauwB-e.png)
 ![image](https://hackmd.io/_uploads/ByMJ6_vB-l.png)
