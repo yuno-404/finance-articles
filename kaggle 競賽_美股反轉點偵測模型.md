@@ -1,6 +1,6 @@
 ---
 title: kaggle 競賽_美股反轉點偵測模型
-
+經由 GEMIMI 輔助文章撰寫
 ---
 
 ## Detecting Reversal Points in US Equities
