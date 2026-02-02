@@ -8,4 +8,5 @@ JUST NOTE FROM MY BLOG https://yuno-404.github.io
 | 2 | [Kaggle 競賽：美股反轉點偵測模型](kaggle%20競賽_美股反轉點偵測模型.md) | Kaggle, Stock Prediction | 2026-01-15 |
 | 3 | [如何收割波動性？](volatility-harvest.md) | 數學, 投資策略, 槓桿 | 2026-01-15 |
 | 4 | [語義交易是一種Alpha嗎_？](語義交易是一種Alpha嗎_.md) | LLM, MCP | 2026-01-15 |
-| 5 | [S&P500動能策略](S&P500動能策略.md) | 投資策略 | 未完成 |
+| 5 | [S&P500動能策略](S&P500動能策略.md) | 投資策略 | 2026-02-?? (90/100) |
+
