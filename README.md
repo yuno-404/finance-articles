@@ -1,7 +1,7 @@
 # Blog Articles
 
-JUST NOTE FROM MY BLOG https://yuno-404.github.io
-
+JUST NOTE FROM MY BLOG [https://yuno-404.github.io
+](https://yuno-blog-one.vercel.app/)
 | # | Title | Tags | Date |
 |---|-------|------|------|
 | 1 | [Transformer 適合用在股價預測上嗎？](Transformer%20適合用在股價預測上嗎.md) | Transformer, JAX | 2026-01-15 |
@@ -10,6 +10,7 @@ JUST NOTE FROM MY BLOG https://yuno-404.github.io
 | 4 | [語義交易是一種Alpha嗎_？](語義交易是一種Alpha嗎_.md) | LLM, MCP | 2026-01-15 |
 | 5 | [SP500_板塊中性動能輪動策略](SP500_板塊中性動能輪動策略.md) | 投資策略 | 待完成 (90/100) |
 | 5 | [封關日台股交易策略](台股封關交易策略.md) | 投資策略 | 待完成 (50/100) |
+
 
 
 
