@@ -93,7 +93,7 @@ $\text{Slope}$ 代表當下的瞬時速度。
 # 1. 套件安裝與匯入
 # ==========================================
 # !pip install yfinance scikit-learn matplotlib
-
+import pandas as pd
 import jax
 import jax.numpy as jnp
 from jax import random, grad, jit, vmap
@@ -118,8 +118,42 @@ START_DATE = "2010-01-04"
 END_DATE = "2018-12-28"
 
 print(f"📥 正在下載 {TICKER} 數據...")
+# --- 建構論文 Section 5.1 定義的 8 個特徵 ---
+# 1. Volume
+# 2. Turnover (估算值: Volume * Close，因 Yahoo 不提供指數成交額)
+# 3. Change (Close - Prev Close)
+# 4. Change rate ((Close - Prev Close) / Prev Close)
+# 5. High
+# 6. Low
+# 7. Open
+# 8. Close
+
 df = yf.download(TICKER, start=START_DATE, end=END_DATE)
-data_raw = df['Close'].values.reshape(-1, 1)  # 只取收盤價
+if isinstance(df.columns, pd.MultiIndex):
+    df.columns = df.columns.get_level_values(0)
+# 為了計算 Change 和 Change Rate，我們需要 shift
+df['Prev_Close'] = df['Close'].shift(1)
+
+# 計算特徵
+df['Change'] = df['Close'] - df['Prev_Close']
+df['Change_Rate'] = (df['Close'] - df['Prev_Close']) / df['Prev_Close']
+df['Turnover'] = df['Volume'] * df['Close'] # 估算
+
+# 移除第一筆 (因為 shift 產生 NaN)
+df = df.dropna()
+
+# 選取並排序特徵 (依照 Table 2 順序)
+feature_cols = [
+    'Volume', 'Turnover', 'Change', 'Change_Rate',
+    'High', 'Low', 'Open', 'Close'
+]
+
+# 確保只取這些欄位的值
+data_raw = df[feature_cols].values
+
+print(f"✅ 特徵工程完成，資料形狀: {data_raw.shape}")
+print(f"   包含特徵: {feature_cols}")
+
 
 print(f"✅ 下載完成，總筆數: {len(data_raw)}")
 
@@ -133,12 +167,12 @@ SEQ_LEN = 5
 PRED_LEN = 1
 
 X_data, Y_data = [], []
-for i in range(len(data_scaled) - SEQ_LEN - PRED_LEN):
-    X_data.append(data_scaled[i : i+SEQ_LEN])      # 歷史 5 天
-    Y_data.append(data_scaled[i+SEQ_LEN : i+SEQ_LEN+PRED_LEN])  # 預測第 6 天
+for i in range(len(data_scaled) - SEQ_LEN - PRED_LEN+1):
+    X_data.append(data_scaled[i : i+SEQ_LEN])      
+    Y_data.append(data_scaled[i+SEQ_LEN : i+SEQ_LEN+PRED_LEN]) 
 
-X = np.array(X_data).astype(np.float32)  # Shape: [N, 5, 1]
-Y = np.array(Y_data).astype(np.float32)  # Shape: [N, 1, 1]
+X = np.array(X_data).astype(np.float32)  # Shape: [N, 5, 8]
+Y = np.array(Y_data).astype(np.float32)  # Shape: [N, 1, 8]
 
 # 切分訓練集 (80%) 與測試集 (20%)
 train_size = int(len(X) * 0.8)
@@ -153,7 +187,7 @@ print()
 # ==========================================
 
 # 參數設定
-INPUT_DIM = 1
+INPUT_DIM = 8
 D_MODEL = 64
 N_HEADS = 4
 N_ENCODER_LAYERS = 2
@@ -316,13 +350,13 @@ def decoder_layer_forward(params, seasonal_input, trend_input, enc_output, kerne
 # 模型初始化與前向傳播
 # ============================================================
 
-def init_sdtp_params(key):
+def init_sdtp_params(key,input_dim):
     """初始化 SDTP 模型參數"""
     keys = random.split(key, 25)
 
     params = {
-        'input_proj': random.normal(keys[0], (INPUT_DIM, D_MODEL)) * 0.02,
-        'output_proj': random.normal(keys[1], (D_MODEL, INPUT_DIM)) * 0.02,
+        'input_proj': random.normal(keys[0], (input_dim, D_MODEL)) * 0.02, # <--- 改這裡
+        'output_proj': random.normal(keys[1], (D_MODEL, input_dim)) * 0.02, # <--- 改這裡
 
         # [NEW] 可學習分解卷積核 (Learnable Kernel)
         # 初始化為 1/k (平均值) 並加上微小雜訊以便梯度下降開始運作
@@ -434,17 +468,56 @@ def sdtp_forward(params, x, kernel_size=3):
     # Output
     final_seasonal = dec_seasonal[:, -PRED_LEN:, :]
     final_trend = dec_trend[:, -PRED_LEN:, :]
-
-    seasonal_proj = final_seasonal @ params['output_proj']
-    trend_proj = final_trend[:, :, :INPUT_DIM]
-
-    predictions = seasonal_proj + trend_proj
-
+    
+    # 【修正】將兩者在隱藏層(64維)先相加，再通過 output_proj 轉回 (8維)
+    # 這是最穩健的做法，確保 Trend 和 Seasonal 都經過正確的權重轉換
+    predictions = (final_seasonal + final_trend) @ params['output_proj']
+    
     return predictions
 
 # ============================================================
 # 損失函數與優化器
 # ============================================================
+@jit
+def direction_weighted_loss(params, x, y_true, kernel_size, lambda_dir=5.0):
+    """
+    結合 MSE 與 方向性懲罰
+    lambda_dir: 方向懲罰係數，設越大模型越在意漲跌方向
+    """
+    # 1. 取得預測值
+    y_pred = sdtp_forward(params, x, kernel_size)
+    
+    # -------------------------------------------------------
+    # 技巧：我們不只看數值，更看「變化量 (Delta)」
+    # -------------------------------------------------------
+    # 取得輸入序列的最後一點 (Last Known Value)
+    # x shape: (Batch, Seq, Features), Close is index 7
+    last_close = x[:, -1:, 7:8] 
+    
+    # 計算真實的漲跌 (Delta True)
+    # y_true shape: (Batch, Pred, Features)
+    delta_true = y_true[:, :, 7:8] - last_close
+    
+    # 計算預測的漲跌 (Delta Pred)
+    delta_pred = y_pred[:, :, 7:8] - last_close
+    
+    # 2. 基礎 MSE Loss
+    mse = jnp.mean((y_pred - y_true) ** 2)
+    
+    # 3. 方向性 Loss (Directional Loss)
+    # 如果 sign(delta_true) != sign(delta_pred)，則給予懲罰
+    # jnp.sign 回傳 -1, 0, 1
+    true_sign = jnp.sign(delta_true)
+    pred_sign = jnp.sign(delta_pred)
+    
+    # 只有當方向相反時 (相乘 < 0)，才會有值
+    direction_error = jnp.where(true_sign * pred_sign < 0, jnp.abs(delta_true - delta_pred), 0.0)
+    dir_loss = jnp.mean(direction_error)
+    
+    # 4. 總 Loss
+    total_loss = mse + lambda_dir * dir_loss
+    
+    return total_loss
 
 def mse_loss(params, x, y_true, kernel_size):
     """MSE Loss - kernel_size 僅作為 padding 參考，實際運算使用 params['decomp_kernel']"""
@@ -452,7 +525,7 @@ def mse_loss(params, x, y_true, kernel_size):
     return jnp.mean((y_pred - y_true) ** 2)
 
 # 編譯梯度函數
-loss_and_grad = jit(jax.value_and_grad(mse_loss), static_argnums=(3,))
+loss_and_grad = jit(jax.value_and_grad(direction_weighted_loss), static_argnums=(3,))
 
 # 簡單的 Adam 優化器實作
 def init_adam_state(params):
@@ -488,7 +561,7 @@ print()
 
 # 初始化模型
 key = random.PRNGKey(42)
-params = init_sdtp_params(key)
+params = init_sdtp_params(key, INPUT_DIM)
 
 # 計算參數量
 n_params = sum(x.size for x in jax.tree.leaves(params))
@@ -552,19 +625,18 @@ print(f"✅ 訓練完成！總時間: {total_time:.2f}s")
 print()
 
 # ==========================================
-# 5. 評估與指標計算
+# 5. 評估與指標計算 (修正維度錯誤版)
 # ==========================================
 
-print("🔍 正在進行測試集評估...")
+print("🔍 正在進行測試集評估 (Target: Close Price)...")
 
-# 編譯推論函數 - 使用 static_argnums
+# 編譯推論函數
 forward_jit = jit(sdtp_forward, static_argnums=(2,))
 
-# 預測
-preds_scaled = []
-trues_scaled = []
+preds_scaled_all = []
+trues_scaled_all = []
 
-# 分批預測 (避免記憶體問題)
+# 分批預測
 test_batch_size = 32
 for i in range(0, len(X_test), test_batch_size):
     x_batch = jnp.array(X_test[i:i+test_batch_size])
@@ -572,25 +644,35 @@ for i in range(0, len(X_test), test_batch_size):
 
     pred = forward_jit(params, x_batch, KERNEL_SIZE).block_until_ready()
 
-    preds_scaled.extend(pred[:, 0, 0])
-    trues_scaled.extend(y_batch[:, 0, 0])
+    # 【關鍵修正 1】提取所有 8 個特徵 (Volume...Close)，而不是只有 Close
+    # pred shape: (Batch, 1, 8) -> 取出 (Batch, 8)
+    preds_scaled_all.extend(pred[:, 0, :]) 
+    trues_scaled_all.extend(y_batch[:, 0, :])
 
-preds_scaled = np.array(preds_scaled).reshape(-1, 1)
-trues_scaled = np.array(trues_scaled).reshape(-1, 1)
+# 轉為 NumPy 陣列，形狀應為 (N, 8)
+preds_scaled_all = np.array(preds_scaled_all)
+trues_scaled_all = np.array(trues_scaled_all)
 
-# 反正規化 (轉回真實股價)
-preds_real = scaler.inverse_transform(preds_scaled)
-trues_real = scaler.inverse_transform(trues_scaled)
+# 【關鍵修正 2】反正規化 (現在輸入是 8 維，Scaler 才能正常工作)
+preds_real_all = scaler.inverse_transform(preds_scaled_all)
+trues_real_all = scaler.inverse_transform(trues_scaled_all)
+
+# 【關鍵修正 3】反正規化後，再單獨取出 Close Price (第 7 欄)
+# feature_cols = ['Volume', ..., 'Close']
+close_idx = 7 
+
+preds_close = preds_real_all[:, close_idx]
+trues_close = trues_real_all[:, close_idx]
 
 # 計算指標
-mse = mean_squared_error(trues_real, preds_real)
+mse = mean_squared_error(trues_close, preds_close)
 rmse = np.sqrt(mse)
-mae = mean_absolute_error(trues_real, preds_real)
-r2 = r2_score(trues_real, preds_real)
-mape = np.mean(np.abs((trues_real - preds_real) / trues_real)) * 100
+mae = mean_absolute_error(trues_close, preds_close)
+r2 = r2_score(trues_close, preds_close)
+mape = np.mean(np.abs((trues_close - preds_close) / trues_close)) * 100
 
 print("-" * 40)
-print(f"🏆 測試集評估結果 (S&P 500):")
+print(f"🏆 測試集評估結果 (S&P 500 Close Price):")
 print(f"RMSE (均方根誤差):   {rmse:.4f}")
 print(f"MAE  (平均絕對誤差): {mae:.4f}")
 print(f"MAPE (百分比誤差):   {mape:.4f}%")
@@ -605,8 +687,9 @@ print()
 # 預測結果對比
 plt.figure(figsize=(12, 6))
 plot_len = 100
-plt.plot(trues_real[-plot_len:], label='Ground Truth (Real Price)', color='green', linewidth=2)
-plt.plot(preds_real[-plot_len:], label='SDTP Prediction (JAX)', color='red', linestyle='--', linewidth=2)
+# 使用修正後的變數名稱: trues_close, preds_close
+plt.plot(trues_close[-plot_len:], label='Ground Truth (Real Price)', color='green', linewidth=2)
+plt.plot(preds_close[-plot_len:], label='SDTP Prediction (JAX)', color='red', linestyle='--', linewidth=2)
 plt.title(f'SDTP Improved Prediction (Last {plot_len} Days)', fontsize=14)
 plt.ylabel('Price (USD)', fontsize=12)
 plt.xlabel('Days', fontsize=12)
@@ -615,35 +698,12 @@ plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
 
-# 訓練 Loss 曲線
+# Training Loss 曲線
 plt.figure(figsize=(8, 5))
 plt.plot(loss_history, linewidth=2)
 plt.title('Training Loss (MSE)', fontsize=14)
 plt.xlabel('Epoch', fontsize=12)
 plt.ylabel('Loss', fontsize=12)
-plt.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-# 誤差分布
-errors = preds_real - trues_real
-plt.figure(figsize=(10, 5))
-plt.subplot(1, 2, 1)
-plt.hist(errors, bins=50, color='steelblue', alpha=0.7, edgecolor='black')
-plt.title('Prediction Error Distribution', fontsize=12)
-plt.xlabel('Error (USD)', fontsize=11)
-plt.ylabel('Frequency', fontsize=11)
-plt.grid(True, alpha=0.3)
-
-plt.subplot(1, 2, 2)
-plt.scatter(trues_real, preds_real, alpha=0.5, s=10)
-plt.plot([trues_real.min(), trues_real.max()],
-         [trues_real.min(), trues_real.max()],
-         'r--', linewidth=2, label='Perfect Prediction')
-plt.title('Prediction vs Ground Truth', fontsize=12)
-plt.xlabel('True Price (USD)', fontsize=11)
-plt.ylabel('Predicted Price (USD)', fontsize=11)
-plt.legend()
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
