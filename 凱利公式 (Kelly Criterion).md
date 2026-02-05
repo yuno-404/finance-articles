@@ -42,10 +42,12 @@ $$G(f) = p \log(1 + \gamma f) + q \log(1 - f)$$
 4. 求解最佳 $f$ (Optimization)
 為了找出使 $G$ 最大的 $f$，我們對 $f$ 微分並令其為 0：$$\frac{dG}{df} = \frac{p \gamma}{1 + \gamma f} - \frac{q}{1 - f} = 0$$
 通分整理：
-$$p \gamma (1 - f) - q (1 + \gamma f) = 0$$  
-$$p \gamma - p \gamma f - q - q \gamma f = 0$$  
+$$p \gamma (1 - f) - q (1 + \gamma f) = 0$$
+$$p \gamma - p \gamma f - q - q \gamma f = 0$$
 $$p \gamma - q = f \gamma (p + q)$$
-因為 $p+q=1$，所以：$$f^* = \frac{p \gamma - q}{\gamma}$$這就是著名的凱利公式。它告訴我們，最佳下注比例等於「期望淨收益除以贏的賠率」 。
+因為 $p+q=1$，所以
+$$f^* = \frac{p \gamma - q}{\gamma}$$
+這就是著名的凱利公式。它告訴我們，最佳下注比例等於「期望淨收益除以贏的賠率」 。
 $$f = \frac{E_{gain}}{\gamma}$$
 * $f$：你應該下注的資金比例（最佳下注比例）。
 * $E_{gain}$ (期望淨收益)：分子。代表這場賭局平均而言對你有多「有利」。
